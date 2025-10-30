@@ -8,10 +8,21 @@ export type FormValues = {
 
 const FLOW_ROWS = [90, 50, 10, 2];
 
-function generateRandomAround10(): number {
-  const delta = 10 * 0.0005; // ±0.05% от 10
-  const value = 10 + (Math.random() * 2 - 1) * delta;
+function generateAround10WithDeltaPercent(deltaPercent: number): number {
+  const base = 10;
+  const delta = base * deltaPercent; // доля, не проценты
+  const value = base + (Math.random() * 2 - 1) * delta;
   return Number(value.toFixed(5));
+}
+
+// Третья колонка (Gизм) — ±0.05%
+function generateMeasured(): number {
+  return generateAround10WithDeltaPercent(0.0005);
+}
+
+// Вторая колонка (Gобр) — ±0.01%
+function generateReference(): number {
+  return generateAround10WithDeltaPercent(0.0001);
 }
 
 function buildHeader(ws: XLSX.WorkSheet, values: FormValues) {
@@ -55,46 +66,72 @@ function buildHeader(ws: XLSX.WorkSheet, values: FormValues) {
 }
 
 function buildTable(ws: XLSX.WorkSheet, measurementsCount: number) {
-  // Заголовки таблицы как на фото (упрощённо)
-  const tableHeaderRow1 = [
+  // Заголовки таблицы — ближе к оригиналу
+  const tableHeaderRow = [
     "Расход, %",
-    "Забр.",
-    "Оизм.",
-    "qизм.",
+    "Gобр, м3/ч",
+    "Gизм, м3/ч",
     "Погр., %",
+    "Погр. ср., %",
     "Доп. Погр., %",
   ];
-  XLSX.utils.sheet_add_aoa(ws, [tableHeaderRow1], { origin: { r: 14, c: 0 } });
+  XLSX.utils.sheet_add_aoa(ws, [tableHeaderRow], { origin: { r: 14, c: 0 } });
 
   let currentRow = 15; // строка после заголовка таблицы
 
   for (const flow of FLOW_ROWS) {
-    // Основная строка расхода
+    // Заголовочная строка блока расхода (будет объединена по вертикали)
     XLSX.utils.sheet_add_aoa(ws, [[flow]], { origin: { r: currentRow, c: 0 } });
 
-    // N дополнительных строк измерений
+    const errors: number[] = [];
+
+    // N строк измерений
     for (let i = 0; i < measurementsCount; i++) {
-      const rowValues = [
-        "",
-        generateRandomAround10(),
-        generateRandomAround10(),
-        generateRandomAround10(),
-        generateRandomAround10(),
-        "",
-      ];
+      const gRef = generateReference();
+      const gMeas = generateMeasured();
+      const errPct = Number((((gMeas - gRef) / gRef) * 100).toFixed(5));
+      errors.push(errPct);
+
+      const rowValues = ["", gRef, gMeas, errPct, "", ""];
       XLSX.utils.sheet_add_aoa(ws, [rowValues], {
         origin: { r: currentRow + 1 + i, c: 0 },
       });
     }
 
-    // Объединить ячейку расхода по вертикали с N строками ниже
-    const merge: XLSX.Range = {
-      s: { r: currentRow, c: 0 },
-      e: { r: currentRow + measurementsCount, c: 0 },
-    };
-    ws["!merges"] = (ws["!merges"] || []).concat([merge]);
+    const avgError = Number(
+      (errors.reduce((a, b) => a + b, 0) / (errors.length || 1)).toFixed(5)
+    );
 
-    // Пропустить к следующему блоку (1 строка заголовка расхода + N строк измерений)
+    const toleranceByFlow: Record<number, string> = {
+      90: "±0.5",
+      50: "±0.5",
+      10: "±1.0",
+      2: "±2.0",
+    };
+    const tolerance = toleranceByFlow[flow] || "";
+
+    // Запишем среднюю и доп. погрешности в строку расхода (и объединим по вертикали)
+    XLSX.utils.sheet_add_aoa(ws, [[, , , , avgError, tolerance]], {
+      origin: { r: currentRow, c: 0 },
+    });
+
+    const mergesForBlock: XLSX.Range[] = [
+      {
+        s: { r: currentRow, c: 0 },
+        e: { r: currentRow + measurementsCount, c: 0 },
+      },
+      {
+        s: { r: currentRow, c: 4 },
+        e: { r: currentRow + measurementsCount, c: 4 },
+      },
+      {
+        s: { r: currentRow, c: 5 },
+        e: { r: currentRow + measurementsCount, c: 5 },
+      },
+    ];
+    ws["!merges"] = (ws["!merges"] || []).concat(mergesForBlock);
+
+    // Пропуск к следующему блоку (1 строка заголовка расхода + N строк измерений)
     currentRow += 1 + measurementsCount + 1; // +1 пустая строка между блоками для читаемости
   }
 }
